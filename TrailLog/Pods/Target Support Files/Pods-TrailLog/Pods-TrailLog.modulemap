@@ -1,0 +1,6 @@
+framework module Pods_TrailLog {
+  umbrella header "Pods-TrailLog-umbrella.h"
+
+  export *
+  module * { export * }
+}

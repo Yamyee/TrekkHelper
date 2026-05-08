@@ -1,0 +1,26 @@
+PODS:
+  - Charts (4.1.0):
+    - Charts/Core (= 4.1.0)
+  - Charts/Core (4.1.0):
+    - SwiftAlgorithms (~> 1.0)
+  - CoreGPX (0.9.0)
+  - SwiftAlgorithms (1.0.0)
+
+DEPENDENCIES:
+  - Charts
+  - CoreGPX (~> 0.9)
+
+SPEC REPOS:
+  trunk:
+    - Charts
+    - CoreGPX
+    - SwiftAlgorithms
+
+SPEC CHECKSUMS:
+  Charts: ce0768268078eee0336f122c3c4ca248e4e204c5
+  CoreGPX: 1381c8c47428c3a6bcac2f93d25ca1c5e3525811
+  SwiftAlgorithms: 38dda4731d19027fdeee1125f973111bf3386b53
+
+PODFILE CHECKSUM: 0c85c5533083fe7f037696c39c06401313505a69
+
+COCOAPODS: 1.16.2
