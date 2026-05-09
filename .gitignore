@@ -4,5 +4,8 @@
 xcuserdata/
 DerivedData/
 .swiftpm/configuration/registries.json
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.swiftpm/xcode/package.xcworkspacedata
 .netrc
+/Pods
+/Podfile.lock
+TrekkHelper.xcworkspace/
