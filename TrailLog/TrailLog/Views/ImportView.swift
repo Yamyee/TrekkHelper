@@ -50,7 +50,17 @@ struct ImportView: View {
             }
             .navigationBarTitle(Text("轨迹导入"), displayMode: .large)
             .sheet(isPresented: $showDocumentPicker) {
-                DocumentPickerView(documentTypes: ["public.xml", "com.topografix.gpx", "com.gpx.gpx"], onPick: { urls in
+                DocumentPickerView(
+                    documentTypes: [
+                        "com.topografix.gpx",
+                        "com.gpx.gpx",
+                        "public.xml",
+                        "public.text",
+                        "public.plain-text",
+                        "public.data",
+                        "public.content"
+                    ],
+                    onPick: { urls in
                     if let url = urls.first {
                         store.importGPX(from: url)
                     }

@@ -21,4 +21,14 @@ enum Formatter {
     static func dateTime(_ date: Date) -> String {
         dateFormatter.string(from: date)
     }
+
+    static func durationHours(_ hours: Double) -> String {
+        let totalMinutes = Int((hours * 60).rounded())
+        let hourPart = totalMinutes / 60
+        let minutePart = totalMinutes % 60
+        if minutePart == 0 {
+            return "\(hourPart)h"
+        }
+        return "\(hourPart)h \(minutePart)m"
+    }
 }

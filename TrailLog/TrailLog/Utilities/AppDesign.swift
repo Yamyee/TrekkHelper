@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum AppDesign {
     static let background = Color(red: 0.98, green: 0.96, blue: 0.93)
@@ -95,5 +96,18 @@ struct AppStatusPill: View {
                     .stroke(tint.opacity(0.28), lineWidth: 1)
             )
             .clipShape(Capsule())
+    }
+}
+
+struct AppLoadingIndicator: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIActivityIndicatorView {
+        let indicator = UIActivityIndicatorView(style: .medium)
+        indicator.color = UIColor(red: 0.66, green: 0.34, blue: 0.20, alpha: 1)
+        indicator.startAnimating()
+        return indicator
+    }
+
+    func updateUIView(_ uiView: UIActivityIndicatorView, context: Context) {
+        uiView.startAnimating()
     }
 }

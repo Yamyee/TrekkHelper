@@ -2,16 +2,17 @@ import CoreLocation
 import Foundation
 
 struct TrackCleanerConfiguration {
-    var maximumSpeedMetersPerSecond: Double = 35
-    var maximumAccelerationMetersPerSecondSquared: Double = 12
-    var spikeDistanceMeters: Double = 120
+    var maximumSpeedMetersPerSecond: Double = 3.33
+    var maximumAccelerationMetersPerSecondSquared: Double = 8
+    var driftDistanceThresholdMeters: Double = 25
+    var spikeDistanceMeters: Double = 60
     var spikeReturnDistanceMeters: Double = 50
-    var hardJumpDistanceMeters: Double = 2_000
-    var gapSplitDistanceMeters: Double = 1_000
+    var hardJumpDistanceMeters: Double = 800
+    var gapSplitDistanceMeters: Double = 600
     var gapSplitTimeInterval: TimeInterval = 15 * 60
-    var suspiciousGapDistanceMeters: Double = 250
-    var suspiciousGapSpeedMetersPerSecond: Double = 4
-    var untimedGapDistanceMeters: Double = 1_500
+    var suspiciousGapDistanceMeters: Double = 180
+    var suspiciousGapSpeedMetersPerSecond: Double = 3.2
+    var untimedGapDistanceMeters: Double = 800
     var pauseClusterSpeedMetersPerSecond: Double = 0.18
     var pauseClusterRadiusMeters: Double = 6
     var pauseClusterMinimumDuration: TimeInterval = 180
@@ -223,6 +224,12 @@ enum TrackCleaner {
             return true
         }
 
+        if previousDistance >= configuration.driftDistanceThresholdMeters,
+           nextDistance >= configuration.driftDistanceThresholdMeters,
+           bypassDistance < configuration.driftDistanceThresholdMeters * 0.6 {
+            return true
+        }
+
         if let previousSpeed = speed(from: previous, to: current),
            previousSpeed > configuration.maximumSpeedMetersPerSecond {
             if let nextSpeed = speed(from: current, to: next),
@@ -242,6 +249,17 @@ enum TrackCleaner {
             let acceleration = abs(nextSpeed - previousSpeed) / timeInterval
             if acceleration > configuration.maximumAccelerationMetersPerSecondSquared,
                bypassDistance < min(previousDistance, nextDistance) {
+                return true
+            }
+        }
+
+        if previous.timestamp != nil,
+           next.timestamp != nil,
+           previousDistance >= configuration.driftDistanceThresholdMeters,
+           nextDistance >= configuration.driftDistanceThresholdMeters {
+            let previousSpeed = speed(from: previous, to: current) ?? 0
+            let nextSpeed = speed(from: current, to: next) ?? 0
+            if previousSpeed > configuration.maximumSpeedMetersPerSecond || nextSpeed > configuration.maximumSpeedMetersPerSecond {
                 return true
             }
         }

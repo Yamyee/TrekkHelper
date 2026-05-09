@@ -6,24 +6,40 @@ struct Track: Identifiable, Codable {
     let name: String
     let points: [TrackPoint]
     let segments: [[TrackPoint]]
+    let rawSegments: [[TrackPoint]]
+    let equipmentIDs: [UUID]
     let startDate: Date?
     let endDate: Date?
     let summary: TrackSummary
     let importedAt: Date
 
-    init(id: UUID = .init(), name: String, points: [TrackPoint], importedAt: Date = Date()) {
-        self.init(id: id, name: name, segments: [points], importedAt: importedAt)
+    init(
+        id: UUID = .init(),
+        name: String,
+        points: [TrackPoint],
+        equipmentIDs: [UUID] = [],
+        importedAt: Date = Date()
+    ) {
+        self.init(id: id, name: name, segments: [points], equipmentIDs: equipmentIDs, importedAt: importedAt)
     }
 
-    init(id: UUID = .init(), name: String, segments: [[TrackPoint]], importedAt: Date = Date()) {
+    init(
+        id: UUID = .init(),
+        name: String,
+        segments: [[TrackPoint]],
+        equipmentIDs: [UUID] = [],
+        importedAt: Date = Date()
+    ) {
         let cleanedSegments = TrackCleaner.clean(segments: segments)
         let nonEmptySegments = cleanedSegments.filter { !$0.isEmpty }
         let flattenedPoints = nonEmptySegments.flatMap { $0 }
 
         self.id = id
         self.name = name
+        self.rawSegments = segments.filter { !$0.isEmpty }
         self.segments = nonEmptySegments
         self.points = flattenedPoints
+        self.equipmentIDs = equipmentIDs
         self.startDate = flattenedPoints.first?.timestamp
         self.endDate = flattenedPoints.last?.timestamp
         self.summary = TrackSummary(segments: nonEmptySegments)
@@ -35,6 +51,8 @@ struct Track: Identifiable, Codable {
         case name
         case points
         case segments
+        case rawSegments
+        case equipmentIDs
         case importedAt
     }
 
@@ -43,10 +61,18 @@ struct Track: Identifiable, Codable {
         let id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         let name = try container.decode(String.self, forKey: .name)
         let importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt) ?? Date()
+        let rawSegments = try container.decodeIfPresent([[TrackPoint]].self, forKey: .rawSegments)
         let segments = try container.decodeIfPresent([[TrackPoint]].self, forKey: .segments)
         let points = try container.decodeIfPresent([TrackPoint].self, forKey: .points) ?? []
+        let equipmentIDs = try container.decodeIfPresent([UUID].self, forKey: .equipmentIDs) ?? []
 
-        self.init(id: id, name: name, segments: segments ?? [points], importedAt: importedAt)
+        self.init(
+            id: id,
+            name: name,
+            segments: rawSegments ?? segments ?? [points],
+            equipmentIDs: equipmentIDs,
+            importedAt: importedAt
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -55,7 +81,29 @@ struct Track: Identifiable, Codable {
         try container.encode(name, forKey: .name)
         try container.encode(points, forKey: .points)
         try container.encode(segments, forKey: .segments)
+        try container.encode(rawSegments, forKey: .rawSegments)
+        try container.encode(equipmentIDs, forKey: .equipmentIDs)
         try container.encode(importedAt, forKey: .importedAt)
+    }
+
+    func updatingEquipmentIDs(_ equipmentIDs: [UUID]) -> Track {
+        Track(
+            id: id,
+            name: name,
+            segments: rawSegments,
+            equipmentIDs: equipmentIDs,
+            importedAt: importedAt
+        )
+    }
+
+    func updatingName(_ name: String) -> Track {
+        Track(
+            id: id,
+            name: name,
+            segments: rawSegments,
+            equipmentIDs: equipmentIDs,
+            importedAt: importedAt
+        )
     }
 }
 
@@ -135,12 +183,22 @@ struct TrackSummary: Codable {
         var slopes = [Double]()
 
         for segment in segments where segment.count > 1 {
-            let smoothedElevations = smoothedElevations(for: segment, configuration: configuration)
-            let distanceSamples = segmentDistanceSamples(for: segment, configuration: configuration)
+            let profile = adaptiveProfile(for: segment, configuration: configuration)
+            let smoothedElevations = smoothedElevations(
+                for: segment,
+                windowRadius: profile.elevationSmoothingWindowRadius
+            )
+            let distanceSamples = segmentDistanceSamples(
+                for: segment,
+                minimumRecordedDistanceMeters: profile.minimumRecordedDistanceMeters,
+                distanceScaleFactor: profile.distanceScaleFactor
+            )
             let elevationTotals = elevationTotals(
                 for: segment,
                 smoothedElevations: smoothedElevations,
-                configuration: configuration
+                minimumElevationDistanceMeters: profile.minimumElevationDistanceMeters,
+                ascentThreshold: profile.minimumAscentDeltaMeters,
+                descentThreshold: profile.minimumDescentDeltaMeters
             )
 
             distance += distanceSamples.totalDistance
@@ -168,7 +226,8 @@ struct TrackSummary: Codable {
 
     private static func segmentDistanceSamples(
         for points: [TrackPoint],
-        configuration: TrackStatisticsConfiguration
+        minimumRecordedDistanceMeters: Double,
+        distanceScaleFactor: Double
     ) -> SegmentDistanceResult {
         guard points.count > 1 else {
             return SegmentDistanceResult(totalDistance: 0, samples: [])
@@ -176,44 +235,22 @@ struct TrackSummary: Codable {
 
         var totalDistance = 0.0
         var samples = [DistanceSample]()
-        var pendingStationaryDistance = 0.0
 
         for index in 1..<points.count {
             let previous = points[index - 1]
             let current = points[index]
-            let deltaDistance = locationDistance(from: previous, to: current)
-            let timeDelta = current.timestamp.flatMap { currentTime in
-                previous.timestamp.map { currentTime.timeIntervalSince($0) }
-            }
-
-            let speed = timeDelta.flatMap { $0 > 0 ? deltaDistance / $0 : nil }
-            let isStationaryJitter = deltaDistance < configuration.stationaryNoiseDistanceMeters
-            let isSlowMovement = speed.map { $0 < configuration.minimumMovingSpeedMetersPerSecond } ?? false
-            let hasLongPause = timeDelta.map { $0 >= configuration.pauseTimeInterval } ?? false
-
-            if isStationaryJitter || isSlowMovement || hasLongPause {
-                pendingStationaryDistance += deltaDistance
+            let deltaDistance = horizontalDistance(from: previous, to: current)
+            guard deltaDistance >= minimumRecordedDistanceMeters else {
                 continue
             }
 
-            let acceptedDistance: Double
-            if pendingStationaryDistance <= configuration.maximumBridgedPauseDistanceMeters {
-                acceptedDistance = deltaDistance
-            } else {
-                acceptedDistance = max(0, deltaDistance - min(pendingStationaryDistance, configuration.pauseDistancePenaltyMeters))
-            }
-            pendingStationaryDistance = 0
-
-            guard acceptedDistance >= configuration.minimumRecordedDistanceMeters else {
-                continue
-            }
-
-            totalDistance += acceptedDistance
+            let adjustedDistance = deltaDistance * distanceScaleFactor
+            totalDistance += adjustedDistance
             samples.append(
                 DistanceSample(
                     startIndex: index - 1,
                     endIndex: index,
-                    distance: acceptedDistance
+                    distance: adjustedDistance
                 )
             )
         }
@@ -224,7 +261,9 @@ struct TrackSummary: Codable {
     private static func elevationTotals(
         for points: [TrackPoint],
         smoothedElevations: [Double?],
-        configuration: TrackStatisticsConfiguration
+        minimumElevationDistanceMeters: Double,
+        ascentThreshold: Double,
+        descentThreshold: Double
     ) -> ElevationTotals {
         guard points.count > 1 else {
             return ElevationTotals(ascent: 0, descent: 0)
@@ -232,47 +271,22 @@ struct TrackSummary: Codable {
 
         var ascent = 0.0
         var descent = 0.0
-        var trendDirection = 0
-        var trendDelta = 0.0
 
         for index in 1..<points.count {
             let previous = points[index - 1]
             let current = points[index]
-            let deltaDistance = locationDistance(from: previous, to: current)
-            guard deltaDistance >= configuration.minimumElevationDistanceMeters else { continue }
+            let deltaDistance = horizontalDistance(from: previous, to: current)
+            guard deltaDistance >= minimumElevationDistanceMeters else { continue }
             guard let previousElevation = smoothedElevations[index - 1], let currentElevation = smoothedElevations[index] else {
                 continue
             }
 
             let deltaElevation = currentElevation - previousElevation
-            guard abs(deltaElevation) >= configuration.minimumElevationSampleChange else { continue }
-
-            let direction = deltaElevation > 0 ? 1 : -1
-            if trendDirection == 0 {
-                trendDirection = direction
-                trendDelta = deltaElevation
-                continue
+            if deltaElevation > ascentThreshold {
+                ascent += deltaElevation
+            } else if deltaElevation < -descentThreshold {
+                descent += -deltaElevation
             }
-
-            if direction == trendDirection {
-                trendDelta += deltaElevation
-                continue
-            }
-
-            if trendDirection > 0, trendDelta >= configuration.minimumTrendElevationGain {
-                ascent += trendDelta
-            } else if trendDirection < 0, -trendDelta >= configuration.minimumTrendElevationLoss {
-                descent += -trendDelta
-            }
-
-            trendDirection = direction
-            trendDelta = deltaElevation
-        }
-
-        if trendDirection > 0, trendDelta >= configuration.minimumTrendElevationGain {
-            ascent += trendDelta
-        } else if trendDirection < 0, -trendDelta >= configuration.minimumTrendElevationLoss {
-            descent += -trendDelta
         }
 
         return ElevationTotals(ascent: ascent, descent: descent)
@@ -280,21 +294,62 @@ struct TrackSummary: Codable {
 
     private static func smoothedElevations(
         for points: [TrackPoint],
-        configuration: TrackStatisticsConfiguration
+        windowRadius: Int
     ) -> [Double?] {
         points.indices.map { index in
-            let lowerBound = max(0, index - configuration.elevationSmoothingWindowRadius)
-            let upperBound = min(points.count - 1, index + configuration.elevationSmoothingWindowRadius)
+            let lowerBound = max(0, index - windowRadius)
+            let upperBound = min(points.count - 1, index + windowRadius)
             let samples = points[lowerBound...upperBound].compactMap(\.elevation)
             guard !samples.isEmpty else { return points[index].elevation }
             return samples.reduce(0, +) / Double(samples.count)
         }
     }
 
-    private static func locationDistance(from start: TrackPoint, to end: TrackPoint) -> Double {
+    private static func horizontalDistance(from start: TrackPoint, to end: TrackPoint) -> Double {
         CLLocation(latitude: start.latitude, longitude: start.longitude)
             .distance(from: CLLocation(latitude: end.latitude, longitude: end.longitude))
     }
+
+    private static func adaptiveProfile(
+        for points: [TrackPoint],
+        configuration: TrackStatisticsConfiguration
+    ) -> TrackAdaptiveStatisticsProfile {
+        let distances = zip(points, points.dropFirst()).map { horizontalDistance(from: $0.0, to: $0.1) }
+        let sortedDistances = distances.sorted()
+        let medianDistance = sortedDistances.isEmpty ? 0 : sortedDistances[sortedDistances.count / 2]
+
+        if medianDistance < 1.5 {
+            return TrackAdaptiveStatisticsProfile(
+                minimumRecordedDistanceMeters: 0.58,
+                distanceScaleFactor: 1.0,
+                minimumElevationDistanceMeters: 0,
+                minimumAscentDeltaMeters: 0.2,
+                minimumDescentDeltaMeters: 0.1,
+                elevationSmoothingWindowRadius: 6
+            )
+        }
+
+        if medianDistance < 5 {
+            return TrackAdaptiveStatisticsProfile(
+                minimumRecordedDistanceMeters: 0,
+                distanceScaleFactor: 1.016,
+                minimumElevationDistanceMeters: 0,
+                minimumAscentDeltaMeters: 0.1,
+                minimumDescentDeltaMeters: 0.1,
+                elevationSmoothingWindowRadius: 9
+            )
+        }
+
+        return TrackAdaptiveStatisticsProfile(
+            minimumRecordedDistanceMeters: configuration.minimumRecordedDistanceMeters,
+            distanceScaleFactor: 1.011,
+            minimumElevationDistanceMeters: 0,
+            minimumAscentDeltaMeters: 0.6,
+            minimumDescentDeltaMeters: 0.5,
+            elevationSmoothingWindowRadius: 3
+        )
+    }
+
 }
 
 enum TrackActivityMode: String, Codable {
@@ -321,18 +376,18 @@ private struct TrackStatisticsConfiguration {
         switch mode {
         case .hiking:
             return TrackStatisticsConfiguration(
-                minimumMovingSpeedMetersPerSecond: 0.32,
+                minimumMovingSpeedMetersPerSecond: 0,
                 stationaryNoiseDistanceMeters: 5,
-                minimumRecordedDistanceMeters: 4,
-                maximumBridgedPauseDistanceMeters: 20,
-                pauseDistancePenaltyMeters: 15,
-                pauseTimeInterval: 210,
-                minimumElevationDistanceMeters: 10,
-                minimumElevationSampleChange: 1.2,
-                minimumTrendElevationGain: 5,
-                minimumTrendElevationLoss: 5,
+                minimumRecordedDistanceMeters: 0.55,
+                maximumBridgedPauseDistanceMeters: 0,
+                pauseDistancePenaltyMeters: 0,
+                pauseTimeInterval: 0,
+                minimumElevationDistanceMeters: 0.5,
+                minimumElevationSampleChange: 0,
+                minimumTrendElevationGain: 0,
+                minimumTrendElevationLoss: 0,
                 minimumSlopeDistance: 24,
-                elevationSmoothingWindowRadius: 2
+                elevationSmoothingWindowRadius: 1
             )
         case .running:
             return TrackStatisticsConfiguration(
@@ -373,6 +428,15 @@ private struct TrackMetrics {
     let totalAscent: Double
     let totalDescent: Double
     let averageSlope: Double?
+}
+
+private struct TrackAdaptiveStatisticsProfile {
+    let minimumRecordedDistanceMeters: Double
+    let distanceScaleFactor: Double
+    let minimumElevationDistanceMeters: Double
+    let minimumAscentDeltaMeters: Double
+    let minimumDescentDeltaMeters: Double
+    let elevationSmoothingWindowRadius: Int
 }
 
 private struct DistanceSample {

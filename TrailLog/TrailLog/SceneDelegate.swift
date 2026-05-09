@@ -21,6 +21,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = UIHostingController(rootView: contentView)
         self.window = window
         window.makeKeyAndVisible()
+        trackStore.loadPersistedData()
 
         if let url = connectionOptions.urlContexts.first?.url {
             importTrackIfPossible(from: url)
